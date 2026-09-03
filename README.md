@@ -33,23 +33,25 @@ Below is pseudo code
 
 ## Data
 
-The token set is {<holed>, </holed>, 1-9, _, |, <solved>, </solved>}.
-<holed> designates the start of a sudoku puzzle with holes and </holed> the end.
+The token set is {`<holed>`, `</holed>`, 1-9, _, |, `<solved>`, `</solved>`}.
+`<holed>` designates the start of a sudoku puzzle with holes and `</holed>` the end.
 _ is the hole token and | is the row separator.
-<solved> and </solved> designate the final solved puzzle.
+`<solved>` and `</solved>` designate the final solved puzzle.
 
 Input training sequences are formatted like so:
+```
 [<holed>, 7, _, 1, 6, 4, 3, _, 2, 8, |,
  1, ..., </holed>, <solved>, _, _, _, ..., |, 
  ..., </solved>, <solved>, ..., </solved>]
+```
 
 The sequences are generate synthetically with the number of holes in each puzzle is sampled uniformly ~[0, 50].
 
-Output sequences are similar but with all holes of the <solved> puzzles filled in with the correct numbers. The model is trained to predict the next token of the output sequences for every input token.
+Output sequences are similar but with all holes of the `<solved>` puzzles filled in with the correct numbers. The model is trained to predict the next token of the output sequences for every input token.
 
 ## Training
 The muon optimizer is used for the weight matrices while AdamW is used for the embeddings and all other parameters.
 
-The number of loops is chosen to equal the number of <solved> puzzles in the training sequences so that each <solved> prediction can be a refinement of the previous full <solved> prediction. This project uses 4 <solved> puzzles and 4 loops for the looped variant. The non-looped variant also uses 4 <solved>, but with 16 distinct layers.
+The number of loops is chosen to equal the number of `<solved>` puzzles in the training sequences so that each `<solved>` prediction can be a refinement of the previous full `<solved>` prediction. This project uses 4 `<solved>` puzzles and 4 loops for the looped variant. The non-looped variant also uses 4 `<solved>`, but with 16 distinct layers.
 
 The learning rate grid {0.005, 0.01, 0.02, 0.04, 0.08} was run for the looped and non-looped architectures over 5000 steps and the best lr was 0.01 for both. The looped variant demonstrated overall faster learning and solution accuracy over the non-looped variant despite having ~4x fewer parameters.
