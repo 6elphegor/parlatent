@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+data/
+runs/*/ckpt.pt
+runs/smoke/
+*.log
+gen/target/
