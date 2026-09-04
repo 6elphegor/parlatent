@@ -87,26 +87,38 @@ def is_consistent(holed: np.ndarray, pred: np.ndarray) -> np.ndarray:
 
 
 # ---- symmetry augmentation ------------------------------------------------
-def augment(grids: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """Random sudoku symmetry: band perm, row-in-band perms, stack perm,
-    col-in-stack perms, digit relabel, optional transpose.  Vectorized."""
-    B = grids.shape[0]
-    g = grids.reshape(B, 9, 9)
-
+def _sym_perms(B: int, rng: np.random.Generator):
+    """Random sudoku symmetry per sample: band perm, row-in-band perms, stack perm,
+    col-in-stack perms, digit relabel, optional transpose."""
     def line_perm():
         band = rng.permuted(np.tile(np.arange(3), (B, 1)), axis=1)         # (B,3)
         within = rng.permuted(np.tile(np.arange(3), (B, 3, 1)), axis=2)    # (B,3,3)
         return (band[:, :, None] * 3 + within).reshape(B, 9)               # (B,9)
+    digit_map = np.zeros((B, 10), dtype=np.uint8)
+    digit_map[:, 1:] = rng.permuted(np.tile(np.arange(1, 10), (B, 1)), axis=1)   # 0 (hole) stays 0
+    return line_perm(), line_perm(), digit_map, rng.random(B) < 0.5
 
-    rp, cp = line_perm(), line_perm()
+
+def _apply_sym(grids: np.ndarray, perms) -> np.ndarray:
+    rp, cp, digit_map, t = perms
+    B = grids.shape[0]
+    g = grids.reshape(B, 9, 9)
     bi = np.arange(B)[:, None, None]
     g = g[bi, rp[:, :, None], cp[:, None, :]]
-    digit_map = np.zeros((B, 10), dtype=grids.dtype)
-    digit_map[:, 1:] = rng.permuted(np.tile(np.arange(1, 10), (B, 1)), axis=1)
     g = np.take_along_axis(digit_map, g.reshape(B, 81).astype(np.int64), axis=1).reshape(B, 9, 9)
-    t = rng.random(B) < 0.5
     g = np.where(t[:, None, None], g.transpose(0, 2, 1), g)
-    return g.reshape(B, 81)
+    return g.reshape(B, 81).astype(grids.dtype)
+
+
+def augment(grids: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Random sudoku symmetry applied to each grid.  Vectorized."""
+    return _apply_sym(grids, _sym_perms(grids.shape[0], rng))
+
+
+def augment_pair(holed: np.ndarray, solved: np.ndarray, rng: np.random.Generator):
+    """Same random symmetry applied to a puzzle and its solution (holes stay holes)."""
+    perms = _sym_perms(holed.shape[0], rng)
+    return _apply_sym(holed, perms), _apply_sym(solved, perms)
 
 
 def punch_holes(solved: np.ndarray, n_holes: np.ndarray, rng: np.random.Generator) -> np.ndarray:
@@ -118,29 +130,60 @@ def punch_holes(solved: np.ndarray, n_holes: np.ndarray, rng: np.random.Generato
 
 
 class SudokuData:
-    """Samples training / eval batches from a bank of solved seed grids."""
+    """Samples training / eval batches.  Two sources:
+      * `bank` (recommended): prefix of .npy files from gen/ (Rust), e.g. data/unique ->
+        unique_{train,val}_{holed,solved}.npy.  Puzzles have UNIQUE solutions.  Train
+        batches are drawn uniformly from the train bank; eval at hole level h draws
+        from val puzzles with exactly h holes.  Symmetry augmentation is applied to
+        puzzle and solution together (it preserves uniqueness).
+      * random punching (legacy, bank=None): solved seed grids from `path` with
+        Uniform{min_holes..max_holes} random holes -- NOT unique past ~30 holes.
+    """
 
     def __init__(self, path: str, n_repeats: int, min_holes: int, max_holes: int,
-                 n_val: int = 10_000, seed: int = 0):
-        grids = np.load(path)
-        assert grids.shape[1] == 81
-        self.train = grids[:-n_val]
-        self.val = grids[-n_val:]
+                 n_val: int = 10_000, seed: int = 0, bank: str | None = None):
         self.n_repeats = n_repeats
         self.min_holes, self.max_holes = min_holes, max_holes
         self.rng = np.random.default_rng(seed)
+        self.bank = None
+        if bank is not None:
+            th, ts = np.load(f"{bank}_train_holed.npy"), np.load(f"{bank}_train_solved.npy")
+            vh, vs = np.load(f"{bank}_val_holed.npy"), np.load(f"{bank}_val_solved.npy")
+            nh = (th == 0).sum(1)
+            keep = (nh >= min_holes) & (nh <= max_holes)
+            th, ts = th[keep], ts[keep]
+            vn = (vh == 0).sum(1)
+            self.bank = dict(train=(th, ts), val={int(h): (vh[vn == h], vs[vn == h]) for h in np.unique(vn)})
+            self.train_seeds = self.val_seeds = None
+        else:
+            grids = np.load(path)
+            assert grids.shape[1] == 81
+            self.train_seeds, self.val_seeds = grids[:-n_val], grids[-n_val:]
+
+    def val_levels(self):
+        return sorted(self.bank["val"]) if self.bank else None
 
     def sample(self, batch_size: int, split: str = "train", n_holes=None,
                rng: np.random.Generator | None = None):
         rng = rng or self.rng
-        bank = self.train if split == "train" else self.val
-        idx = rng.integers(0, len(bank), batch_size)
-        solved = augment(bank[idx], rng)
-        if n_holes is None:
-            n_holes = rng.integers(self.min_holes, self.max_holes + 1, batch_size)
+        if self.bank is not None:
+            if split == "train":
+                h, sv = self.bank["train"]
+            else:
+                assert n_holes in self.bank["val"], f"no val puzzles with {n_holes} holes; have {self.val_levels()}"
+                h, sv = self.bank["val"][int(n_holes)]
+            idx = rng.integers(0, len(h), batch_size)
+            holed, solved = augment_pair(h[idx], sv[idx], rng)
+            n_holes = (holed == 0).sum(1)
         else:
-            n_holes = np.full(batch_size, n_holes)
-        holed = punch_holes(solved, n_holes, rng)
+            seeds = self.train_seeds if split == "train" else self.val_seeds
+            idx = rng.integers(0, len(seeds), batch_size)
+            solved = augment(seeds[idx], rng)
+            if n_holes is None:
+                n_holes = rng.integers(self.min_holes, self.max_holes + 1, batch_size)
+            else:
+                n_holes = np.full(batch_size, int(n_holes))
+            holed = punch_holes(solved, n_holes, rng)
         inp, tgt = build_sequences(holed, solved, self.n_repeats)
         return dict(inp=torch.from_numpy(inp), tgt=torch.from_numpy(tgt),
                     holed=holed, solved=solved, n_holes=n_holes)

@@ -61,7 +61,7 @@ def main():
     ax.text(0, 1.02, "lines: train loss (light = raw, bold = 250-step mean);  dots: held-out eval loss at 40 holes",
             transform=ax.transAxes, fontsize=8.5, color=TEXT2, va="bottom")
     from matplotlib.ticker import FixedLocator, NullLocator, FuncFormatter
-    ax.yaxis.set_major_locator(FixedLocator([0.25, 0.3, 0.4, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0]))
+    ax.yaxis.set_major_locator(FixedLocator([0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0]))
     ax.yaxis.set_minor_locator(NullLocator())
     ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
     ax.grid(True, which="major", color=GRID, lw=0.8)

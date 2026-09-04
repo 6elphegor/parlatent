@@ -1,6 +1,7 @@
 """Held-out accuracy curves for several runs: small multiples per hole level.
 Top row: solve rate (valid grid consistent with givens).  Bottom row: hole-cell accuracy.
-Usage: python plot_acc.py loop4_lr0.01 deep16_lr0.01 [--out plots/acc_best.png]"""
+Usage: python plot_acc.py loop4_lr0.01 deep16_lr0.01 [--out plots/acc_best.png]
+       python plot_acc.py loop4_lr0.01 deep16_lr0.01 --levels 40 --metrics solve --out plots/solve40_best.png"""
 import argparse, json
 import numpy as np
 import matplotlib
@@ -10,16 +11,14 @@ from matplotlib.ticker import PercentFormatter
 
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"]
 SURFACE, TEXT, TEXT2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e6e5e1"
-LEVELS = ["20", "30", "40", "50"]
-
-
 def load(name):
-    steps, solve, acc = [], {h: [] for h in LEVELS}, {h: [] for h in LEVELS}
+    steps, solve, acc = [], {}, {}
     for line in open(f"runs/{name}/metrics.jsonl"):
         d = json.loads(line)
         if "eval" in d:
             steps.append(d["step"])
-            for h in LEVELS:
+            for h in d["eval"]:
+                solve.setdefault(h, []); acc.setdefault(h, [])
                 solve[h].append(d["eval"][h]["solve_rate"][-1][-1])
                 acc[h].append(d["eval"][h]["hole_acc"][-1][-1])
     return np.array(steps), solve, acc
@@ -35,11 +34,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("runs", nargs="+")
     ap.add_argument("--out", default="plots/acc_best.png")
+    ap.add_argument("--levels", default="20,30,40,50", help="hole levels, comma-separated")
+    ap.add_argument("--metrics", default="solve,acc", help="rows: solve and/or acc")
     a = ap.parse_args()
     data = {n: load(n) for n in a.runs}
-
-    fig, axes = plt.subplots(2, len(LEVELS), figsize=(12, 6), dpi=150, facecolor=SURFACE, sharex=True)
-    rows = [("solve rate", 1), ("hole-cell accuracy", 2)]
+    LEVELS = a.levels.split(",")
+    rows = [m for m in [("solve rate", 1), ("hole-cell accuracy", 2)]
+            if ("solve" if m[1] == 1 else "acc") in a.metrics.split(",")]
+    single = len(rows) == 1 and len(LEVELS) == 1
+    figsize = (7, 4.5) if single else (3 * len(LEVELS), 3 * len(rows))
+    fig, axes = plt.subplots(len(rows), len(LEVELS), figsize=figsize, dpi=150, facecolor=SURFACE,
+                             sharex=True, squeeze=False)
     for r, (title, idx) in enumerate(rows):
         for c, h in enumerate(LEVELS):
             ax = axes[r, c]
@@ -55,11 +60,11 @@ def main():
                 dy = (-5 + 10 * rank[name]) if spread else 0
                 ax.annotate(f"{y[-1]:.0%}", (steps[-1], y[-1]), xytext=(4, dy), textcoords="offset points",
                             va="center", fontsize=8, color=TEXT2)
-            if r == 0:
+            if r == 0 and not single:
                 ax.set_title(f"{h} holes", color=TEXT, fontsize=11, loc="left")
             if c == 0:
                 ax.set_ylabel(title, color=TEXT2)
-            if r == 1:
+            if r == len(rows) - 1:
                 ax.set_xlabel("training step", color=TEXT2)
             lo = 0.0 if idx == 1 else 0.5
             ax.set_ylim(lo, 1.02)
@@ -71,11 +76,17 @@ def main():
             for sp in ("left", "bottom"):
                 ax.spines[sp].set_color(GRID)
             ax.tick_params(colors=TEXT2, labelsize=8.5)
-    fig.suptitle("Held-out accuracy by hole count, best learning rate per architecture (final loop, last copy)",
-                 x=0.01, y=0.985, ha="left", color=TEXT, fontsize=12)
-    fig.legend(*axes[0, 0].get_legend_handles_labels(), frameon=False, fontsize=9, loc="upper left",
-               bbox_to_anchor=(0.005, 0.955), ncol=2, labelcolor=TEXT)
-    fig.tight_layout(rect=(0, 0, 1, 0.91))
+    if single:
+        fig.suptitle(f"Held-out {rows[0][0]} at {LEVELS[0]} holes (final loop, last copy)",
+                     x=0.01, y=0.985, ha="left", color=TEXT, fontsize=12)
+        axes[0, 0].legend(frameon=False, fontsize=9, loc="lower right", labelcolor=TEXT)
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+    else:
+        fig.suptitle("Held-out accuracy by hole count, best learning rate per architecture (final loop, last copy)",
+                     x=0.01, y=0.985, ha="left", color=TEXT, fontsize=12)
+        fig.legend(*axes[0, 0].get_legend_handles_labels(), frameon=False, fontsize=9, loc="upper left",
+                   bbox_to_anchor=(0.005, 0.955), ncol=2, labelcolor=TEXT)
+        fig.tight_layout(rect=(0, 0, 1, 0.91))
     fig.savefig(a.out, facecolor=SURFACE)
     print("saved", a.out)
 

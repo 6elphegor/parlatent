@@ -1,5 +1,6 @@
 """Train a looped transformer to solve sudoku.
 
+Data:     puzzles with unique solutions from gen/ (Rust), symmetry-augmented on the fly.
 Input:    [<holed> 81 cells </holed>] + n_repeats x [<solved> 81 x HOLE </solved>]
 Target:   [<holed> 81 cells </holed>] + n_repeats x [<solved> true solution </solved>]
 Loss:     next-token CE (shifted by one) on all positions, averaged over loops.  The
@@ -26,8 +27,8 @@ def parse():
     ap.add_argument("--data", default="data/solved_grids.npy")
     ap.add_argument("--n_repeats", type=int, default=4, help="solved copies per sequence")
     ap.add_argument("--n_loops", type=int, default=None, help="default = n_repeats; 1 = no looping")
-    ap.add_argument("--min_holes", type=int, default=0)
-    ap.add_argument("--max_holes", type=int, default=50)
+    ap.add_argument("--min_holes", type=int, default=0, help="train hole range (filters the bank)")
+    ap.add_argument("--max_holes", type=int, default=60)
     ap.add_argument("--d_model", type=int, default=256)
     ap.add_argument("--n_heads", type=int, default=4)
     ap.add_argument("--n_layers", type=int, default=4)
@@ -40,7 +41,9 @@ def parse():
     ap.add_argument("--warmup", type=int, default=500)
     ap.add_argument("--grad_clip", type=float, default=1.0)
     ap.add_argument("--eval_interval", type=int, default=1000)
-    ap.add_argument("--eval_holes", default="10,20,30,40,50")
+    ap.add_argument("--eval_holes", default="10,20,30,40,50,55,60", help="comma list of hole counts")
+    ap.add_argument("--bank", default="data/unique",
+                    help="prefix of unique-puzzle .npy files from gen/ (default); 'none' = random punching")
     ap.add_argument("--eval_n", type=int, default=512, help="puzzles per hole level")
     ap.add_argument("--no_causal", action="store_true", help="bidirectional attention")
     ap.add_argument("--log_interval", type=int, default=50)
@@ -85,7 +88,8 @@ def evaluate(model, data, args, dev, rng):
                 valid[l, k] = (S.is_valid_grid(g) & S.is_consistent(b["holed"], g)).mean()
                 exact[l, k] = (g == b["solved"]).all(1).mean()
         out[h] = dict(loss=loss.item(), loop_losses=[x.item() for x in losses],
-                      hole_acc=acc.tolist(), solve_rate=valid.tolist(), exact=exact.tolist())
+                      hole_acc=acc.tolist(), solve_rate=valid.tolist(), exact=exact.tolist(),
+                      mean_holes=float(np.mean(b["n_holes"])))
     model.train()
     return out
 
@@ -105,7 +109,8 @@ def main():
     json.dump(vars(args), open(os.path.join(run_dir, "config.json"), "w"), indent=2)
     metrics_f = open(os.path.join(run_dir, "metrics.jsonl"), "a")
 
-    data = S.SudokuData(args.data, args.n_repeats, args.min_holes, args.max_holes, seed=args.seed)
+    data = S.SudokuData(args.data, args.n_repeats, args.min_holes, args.max_holes, seed=args.seed,
+                        bank=None if args.bank == "none" else args.bank)
     T = S.seq_len(args.n_repeats)
     cfg = Config(vocab_size=S.VOCAB_SIZE, d_model=args.d_model, n_heads=args.n_heads,
                  n_layers=args.n_layers, ffn_mult=args.ffn_mult, n_loops=args.n_loops,
@@ -113,7 +118,8 @@ def main():
     model = LoopedTransformer(cfg).to(dev)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"run={args.name} params={n_params/1e6:.2f}M seq_len={T} n_repeats={args.n_repeats} "
-          f"n_loops={args.n_loops} causal={cfg.causal} holes=[{args.min_holes},{args.max_holes}]", flush=True)
+          f"n_loops={args.n_loops} causal={cfg.causal} holes=[{args.min_holes},{args.max_holes}] "
+          f"bank={args.bank}", flush=True)
 
     muon_p, adam_p = model.param_groups()
     opt_muon = Muon(muon_p, lr=args.muon_lr, momentum=0.95, weight_decay=args.weight_decay)
